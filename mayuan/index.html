@@ -50,6 +50,19 @@ h1{font-size:19px;margin:0;font-weight:600}
 .studybox{border:1px solid var(--line);border-radius:11px;padding:12px 14px;margin-top:14px;background:var(--accent)}
 .studybox .ansline{font-size:16px;line-height:1.7;margin-top:4px}
 .studybox .row{margin-top:10px}
+.searchrow{display:flex;gap:8px;align-items:center;margin-top:6px}
+#searchInput{flex:1 1 auto;min-width:0;border:1px solid var(--line);border-radius:10px;
+  padding:9px 12px;font:inherit;background:transparent;color:var(--fg)}
+#searchInput:focus{outline:none;border-color:var(--primary);background:var(--accent)}
+.results{margin-top:10px;max-height:420px;overflow:auto;display:grid;gap:8px;
+  border-top:1px solid var(--line);padding-top:10px}
+.sr{text-align:left;cursor:pointer;background:transparent;border:1px solid var(--line);
+  border-radius:10px;padding:9px 11px;font:inherit;color:var(--fg)}
+.sr:hover{background:var(--accent)}
+.sr .m{color:var(--muted);font-size:12.5px;margin-bottom:2px}
+.sr .t{font-size:14.5px;line-height:1.55}
+mark{background:#ffe58a;color:#3a2a00;padding:0 1px;border-radius:2px}
+@media (prefers-color-scheme: dark){ mark{background:#6b5a1e;color:#fff2c2} }
 .fb{margin-top:16px;display:none;align-items:flex-start;gap:12px;font-size:16px}
 .fb.show{display:flex}
 .fb .badge{flex:0 0 auto;border-radius:8px;padding:3px 11px;font-weight:600;font-size:15px}
@@ -100,6 +113,15 @@ footer{margin-top:22px;color:var(--muted);font-size:13px}
   <section class="card start" id="start">
     <h2>开始练习</h2>
     <div class="hint" id="intro"></div>
+    <div class="group" style="margin-top:14px">
+      <div class="hint">搜索题目（输入关键字自动列出全部相关题目，点任意一条即可从该题开始练）</div>
+      <div class="searchrow">
+        <input id="searchInput" type="search" placeholder="例如：实践、矛盾、剩余价值、商品" autocomplete="off">
+        <button class="btn" id="clearSearch" type="button">清空</button>
+      </div>
+      <div id="searchMeta" class="hint" style="margin-top:6px"></div>
+      <div id="searchResults" class="results hidden"></div>
+    </div>
     <div class="group" style="margin-top:14px">
       <div class="hint">章节</div>
       <div class="chips" id="chapterChips" role="group" aria-label="章节"></div>
@@ -427,6 +449,95 @@ el('typeChips').addEventListener('click', function(e){
 el('modeChips').addEventListener('click', function(e){
   const b = e.target.closest('.chip'); if (!b) return;
   mode = b.dataset.mode; setChips(el('modeChips'), 'mode', mode);
+});
+
+// ---- 搜索 / 索引 ----
+let searchHits = [], searchTimer = null;
+function qText(q){
+  return q.stem + ' ' + q.options.map(function(o){ return o.t; }).join(' ');
+}
+function highlightInto(target, text, kw){
+  const lower = text.toLowerCase(), k = kw.toLowerCase();
+  let pos = 0, at = lower.indexOf(k);
+  if (at < 0){ target.textContent = text; return; }
+  while (at >= 0){
+    if (at > pos) target.appendChild(document.createTextNode(text.slice(pos, at)));
+    const m = document.createElement('mark');
+    m.textContent = text.slice(at, at + kw.length);
+    target.appendChild(m);
+    pos = at + kw.length;
+    at = lower.indexOf(k, pos);
+  }
+  if (pos < text.length) target.appendChild(document.createTextNode(text.slice(pos)));
+}
+function doSearch(raw){
+  const kw = raw.trim();
+  const box = el('searchResults'), meta = el('searchMeta');
+  if (!kw){
+    searchHits = [];
+    box.innerHTML = ''; box.classList.add('hidden'); meta.textContent = '';
+    return;
+  }
+  const lower = kw.toLowerCase();
+  searchHits = ALL.filter(function(q){ return qText(q).toLowerCase().indexOf(lower) >= 0; });
+  meta.textContent = searchHits.length
+    ? ('找到 ' + searchHits.length + ' 道题，点任意一条从该题开始（按原顺序）')
+    : ('没有找到包含“' + kw + '”的题目');
+  box.innerHTML = '';
+  box.classList.remove('hidden');
+  searchHits.slice(0, 300).forEach(function(q, i){
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'sr';
+    const m = document.createElement('div'); m.className = 'm';
+    m.textContent = q.chapter + ' · ' + TYPE_NAME[q.type] + ' · 答案 '
+      + (q.type === 'judge' ? q.answer : q.answer.split('').join('、'));
+    const t = document.createElement('div'); t.className = 't';
+    highlightInto(t, q.stem, kw);
+    b.appendChild(m); b.appendChild(t);
+    if (q.stem.toLowerCase().indexOf(lower) < 0){
+      const hit = q.options.filter(function(o){ return o.t.toLowerCase().indexOf(lower) >= 0; })[0];
+      if (hit){
+        const o = document.createElement('div');
+        o.className = 't';
+        o.style.color = 'var(--muted)';
+        o.style.fontSize = '13.5px';
+        o.appendChild(document.createTextNode('选项 ' + hit.k + '．'));
+        highlightInto(o, hit.t, kw);
+        b.appendChild(o);
+      }
+    }
+    b.addEventListener('click', function(){
+      build(searchHits.slice());
+      const pos = queue.indexOf(q);
+      idx = pos >= 0 ? pos : 0;
+      render();
+    });
+    box.appendChild(b);
+  });
+  if (searchHits.length > 300){
+    const more = document.createElement('div');
+    more.className = 'hint';
+    more.textContent = '结果较多，只列出前 300 条，输入更精确的关键字可缩小范围。';
+    box.appendChild(more);
+  }
+}
+el('searchInput').addEventListener('input', function(e){
+  clearTimeout(searchTimer);
+  const v = e.target.value;
+  searchTimer = setTimeout(function(){ doSearch(v); }, 150);
+});
+el('searchInput').addEventListener('keydown', function(e){
+  if (e.key === 'Enter'){
+    e.preventDefault();
+    clearTimeout(searchTimer);
+    doSearch(e.target.value);
+    if (searchHits.length){ build(searchHits.slice()); }
+  }
+});
+el('clearSearch').addEventListener('click', function(){
+  el('searchInput').value = '';
+  doSearch('');
+  el('searchInput').focus();
 });
 el('orderChips').addEventListener('click', function(e){
   const b = e.target.closest('.chip'); if (!b) return;
