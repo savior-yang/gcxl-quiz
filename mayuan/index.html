@@ -47,6 +47,9 @@ h1{font-size:19px;margin:0;font-weight:600}
 .opt.bad{background:var(--bad-bg);border-color:var(--bad)}
 .opt.bad .k{background:var(--bad);border-color:var(--bad);color:#fff}
 .opt.dim{opacity:.6}
+.studybox{border:1px solid var(--line);border-radius:11px;padding:12px 14px;margin-top:14px;background:var(--accent)}
+.studybox .ansline{font-size:16px;line-height:1.7;margin-top:4px}
+.studybox .row{margin-top:10px}
 .fb{margin-top:16px;display:none;align-items:flex-start;gap:12px;font-size:16px}
 .fb.show{display:flex}
 .fb .badge{flex:0 0 auto;border-radius:8px;padding:3px 11px;font-weight:600;font-size:15px}
@@ -117,6 +120,13 @@ footer{margin-top:22px;color:var(--muted);font-size:13px}
         <button class="chip" type="button" data-order="rand" aria-pressed="false">随机顺序</button>
       </div>
     </div>
+    <div class="group">
+      <div class="hint">练习方式</div>
+      <div class="chips" id="modeChips" role="group" aria-label="练习方式">
+        <button class="chip" type="button" data-mode="quiz" aria-pressed="true">答题模式：自己选，判对错</button>
+        <button class="chip" type="button" data-mode="study" aria-pressed="false">背题模式：题目和答案同时显示</button>
+      </div>
+    </div>
     <div class="row">
       <button class="btn primary" id="startBtn" type="button">开始答题</button>
       <span class="hint">多选需选好后点“提交答案”</span>
@@ -132,6 +142,14 @@ footer{margin-top:22px;color:var(--muted);font-size:13px}
     </div>
     <p class="stem" id="stem"></p>
     <div class="opts" id="opts"></div>
+    <div class="studybox hidden" id="studybox">
+      <div class="hint">背题模式：正确答案已标出</div>
+      <div class="ansline" id="ansline"></div>
+      <div class="row" style="margin-top:10px">
+        <button class="btn" id="knowBtn" type="button">记住了</button>
+        <button class="btn" id="dontBtn" type="button">没记住</button>
+      </div>
+    </div>
     <div class="fb" id="fb" role="status" aria-live="polite">
       <span class="badge" id="fbBadge"></span>
       <span class="txt" id="fbText"></span>
@@ -170,6 +188,7 @@ const AUTO_MS = 1400;
 
 let queue = [], idx = 0, right = 0, wrong = 0, wrongList = [], responses = [];
 let answered = false, auto = true, timer = null, chapter = 'all', type = 'all', order = 'seq';
+let mode = 'quiz';
 
 function pool(){
   return ALL.filter(function(q){
@@ -213,7 +232,11 @@ function render(){
   el('fbBadge').textContent = ''; el('fbText').textContent = '';
   el('autoHint').textContent = '';
   el('prevBtn').disabled = (idx === 0);
-  el('nextBtn').textContent = (q.type === 'multi' && !resp) ? '提交答案'
+  const study = (mode === 'study');
+  el('studybox').classList.toggle('hidden', !study);
+  el('knowBtn').disabled = answered;
+  el('dontBtn').disabled = answered;
+  el('nextBtn').textContent = (q.type === 'multi' && !resp && !study) ? '提交答案'
     : (idx === queue.length - 1 ? '查看结果' : '下一题');
 
   const box = el('opts'); box.innerHTML = '';
@@ -246,7 +269,20 @@ function render(){
       box.appendChild(b);
     });
   }
-  if (resp) paint(q, resp);
+  if (study){
+    el('ansline').textContent = '答案：' + answerText(q);
+    document.querySelectorAll('.opt').forEach(function(b){
+      b.disabled = true;
+      if (q.answer.indexOf(b.dataset.k) >= 0) b.classList.add('ok');
+      else b.classList.add('dim');
+    });
+    if (resp){
+      const f = el('fb');
+      f.className = 'fb show ' + (resp.ok ? 'good' : 'bad');
+      el('fbBadge').textContent = resp.ok ? '记住了' : '没记住';
+      el('fbText').textContent = resp.ok ? '' : '已加入错题，结果页可以回看。';
+    }
+  } else if (resp) paint(q, resp);
   updateBar();
 }
 function paint(q, resp){
@@ -299,6 +335,26 @@ function submit(picked){
   }
 }
 function answer(k){ submit(k); }
+function assessStudy(ok){
+  if (answered || !queue[idx]) return;
+  answered = true;
+  const q = queue[idx];
+  responses[idx] = { picked: '', ok: ok };
+  if (ok){ right++; } else { wrong++; wrongList.push(q); }
+  el('knowBtn').disabled = true;
+  el('dontBtn').disabled = true;
+  const f = el('fb');
+  f.className = 'fb show ' + (ok ? 'good' : 'bad');
+  el('fbBadge').textContent = ok ? '记住了' : '没记住';
+  el('fbText').textContent = ok ? '' : '已加入错题，结果页可以回看。';
+  el('stats').textContent = '正确 ' + right + ' · 错误 ' + wrong;
+  el('nextBtn').textContent = idx === queue.length - 1 ? '查看结果' : '下一题';
+  updateBar();
+  if (auto){
+    el('autoHint').textContent = '即将自动进入下一题…';
+    timer = setTimeout(next, AUTO_MS);
+  }
+}
 function submitMulti(){
   const q = queue[idx];
   if (!q || q.type !== 'multi' || answered) return;
@@ -368,6 +424,10 @@ el('typeChips').addEventListener('click', function(e){
   const b = e.target.closest('.chip'); if (!b) return;
   type = b.dataset.type; setChips(el('typeChips'), 'type', type);
 });
+el('modeChips').addEventListener('click', function(e){
+  const b = e.target.closest('.chip'); if (!b) return;
+  mode = b.dataset.mode; setChips(el('modeChips'), 'mode', mode);
+});
 el('orderChips').addEventListener('click', function(e){
   const b = e.target.closest('.chip'); if (!b) return;
   order = b.dataset.order; setChips(el('orderChips'), 'order', order);
@@ -383,6 +443,8 @@ el('homeBtn').addEventListener('click', function(){
 });
 el('wrongBtn').addEventListener('click', function(){ if (wrongList.length) build(wrongList.slice()); });
 el('prevBtn').addEventListener('click', prev);
+el('knowBtn').addEventListener('click', function(){ assessStudy(true); });
+el('dontBtn').addEventListener('click', function(){ assessStudy(false); });
 el('exitBtn').addEventListener('click', function(){
   clearTimeout(timer);
   el('quiz').classList.add('hidden');
@@ -409,6 +471,13 @@ document.addEventListener('keydown', function(e){
     return;
   }
   const q = queue[idx]; if (!q) return;
+  if (mode === 'study'){
+    if (!answered && (e.key === '1' || e.key === '2')){ assessStudy(e.key === '1'); return; }
+    if (e.key === 'Enter' || e.key === ' '){ e.preventDefault(); if (answered) next(); }
+    else if (e.key === 'ArrowLeft'){ e.preventDefault(); prev(); }
+    else if (e.key === 'ArrowRight'){ e.preventDefault(); next(); }
+    return;
+  }
   if (e.key >= '1' && e.key <= '4' && !answered){
     if (q.type === 'judge'){
       if (e.key === '1') answer('是');
