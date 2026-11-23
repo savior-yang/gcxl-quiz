@@ -78,6 +78,15 @@ mark{background:#ffe58a;color:#3a2a00;padding:0 1px;border-radius:2px}
 .modalcard p{margin:0 0 14px;color:var(--muted);font-size:14.5px;line-height:1.7}
 .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:#22262d;color:#fff;
   padding:9px 16px;border-radius:10px;font-size:14px;z-index:60;opacity:.96}
+.jump{display:flex;align-items:center;gap:5px;font-size:13px;color:var(--muted)}
+.jump input{width:64px;border:1px solid var(--line);border-radius:8px;padding:3px 6px;
+  font:inherit;font-size:13px;background:transparent;color:var(--fg)}
+.jump input:focus{outline:none;border-color:var(--primary)}
+.jump .btn{padding:3px 10px;font-size:13px}
+.planbadge{border:1px dashed var(--line);border-radius:99px;padding:1px 9px;font-size:12.5px;color:var(--muted)}
+.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:-4px 0 10px}
+.toolbar .btn{padding:3px 10px;font-size:13px}
+.toolbar .spacer{margin-left:auto}
 .fb{margin-top:16px;display:none;align-items:flex-start;gap:12px;font-size:16px}
 .fb.show{display:flex}
 .fb .badge{flex:0 0 auto;border-radius:8px;padding:3px 11px;font-weight:600;font-size:15px}
@@ -172,6 +181,15 @@ footer{margin-top:22px;color:var(--muted);font-size:13px}
       </div>
     </div>
     <div class="group">
+      <div class="hint">今日计划（可选）：今天打算答多少题</div>
+      <div class="searchrow">
+        <input id="planCount" type="number" min="1" max="500" placeholder="例如 50，留空则不设计划" style="flex:1 1 auto;min-width:0;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font:inherit;background:transparent;color:var(--fg)">
+        <button class="btn" id="planBtn" type="button">开始今日计划</button>
+        <button class="btn" id="planReset" type="button">重置</button>
+      </div>
+      <div id="planMeta" class="hint" style="margin-top:6px"></div>
+    </div>
+    <div class="group">
       <div class="hint">我的存档（最多 5 个）</div>
       <div class="saves" id="savesList"></div>
       <div class="hint" id="savesMeta" style="margin-top:8px"></div>
@@ -187,8 +205,17 @@ footer{margin-top:22px;color:var(--muted);font-size:13px}
       <span class="tag" id="qtag">单项选择</span>
       <span id="qno"></span>
       <span id="stats" style="margin-left:auto"></span>
-      <button class="btn" id="saveBtn" type="button" style="padding:3px 10px;font-size:13px">存档</button>
-      <button class="btn" id="exitBtn" type="button" style="padding:3px 10px;font-size:13px">退出答题</button>
+    </div>
+    <div class="toolbar">
+      <span class="planbadge hidden" id="planBadge"></span>
+      <span class="jump">跳到
+        <input id="jumpInput" type="number" min="1" placeholder="题号">
+        题
+        <button class="btn" id="jumpBtn" type="button">跳转</button>
+      </span>
+      <span class="spacer"></span>
+      <button class="btn" id="saveBtn" type="button">存档</button>
+      <button class="btn" id="exitBtn" type="button">退出答题</button>
     </div>
     <p class="stem" id="stem"></p>
     <div class="opts" id="opts"></div>
@@ -271,7 +298,7 @@ function toast(msg){
 function snapshot(){
   if (!queue.length) return null;
   return {
-    v: 1, module: moduleId, chapter: chapter, type: type, order: order, mode: mode,
+    v: 1, module: moduleId, chapter: chapter, type: type, order: order, mode: mode, plan: isPlanSession,
     ids: queue.map(function(q){ return q.id; }),
     idx: idx, right: right, wrong: wrong,
     responses: responses.map(function(r){ return r ? { picked: r.picked, ok: r.ok } : null; }),
@@ -298,6 +325,7 @@ function restore(s){
   type = s.type || 'all';
   order = s.order || 'seq';
   mode = s.mode || 'quiz';
+  isPlanSession = !!s.plan;
   setChips(el('moduleChips'), 'module', moduleId);
   buildChapters(); buildIntro();
   setChips(el('chapterChips'), 'chapter', chapter);
@@ -319,6 +347,7 @@ function restore(s){
   el('quiz').classList.remove('hidden');
   answered = false;
   render();
+  updatePlanBadge();
 }
 function getSaves(){
   const a = readJSON(LS_SAVES, []);
@@ -371,6 +400,73 @@ function saveArchive(){
   toast('已存档（' + saves.length + '/' + MAX_SAVES + '）');
 }
 
+// ---------------- 今日计划 ----------------
+const LS_PLAN = 'sztiku_plan_v1';
+let isPlanSession = false;
+function todayStr(){
+  const d = new Date();
+  const p = function(n){ return (n < 10 ? '0' : '') + n; };
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+}
+function getPlan(){
+  const p = readJSON(LS_PLAN, null);
+  if (!p || p.date !== todayStr()) return null;
+  return p;
+}
+function savePlanObj(p){ writeJSON(LS_PLAN, p); }
+function renderPlan(){
+  const p = getPlan();
+  el('planMeta').textContent = p
+    ? ('今日计划：' + p.target + ' 题，已完成 ' + p.done + ' 题' + (p.done >= p.target ? '（已完成）' : ''))
+    : '未设置今日计划（留空则按当前范围不限题量）。';
+}
+function updatePlanBadge(){
+  const p = getPlan();
+  const b = el('planBadge');
+  if (isPlanSession && p){
+    b.textContent = '今日计划 ' + p.done + '/' + p.target;
+    b.classList.remove('hidden');
+  } else {
+    b.classList.add('hidden');
+  }
+}
+function countPlan(){
+  if (!isPlanSession) return;
+  const p = getPlan();
+  if (!p) return;
+  p.done = Math.min(p.target, p.done + 1);
+  savePlanObj(p);
+  updatePlanBadge();
+  renderPlan();
+}
+function startWithIds(ids){
+  const byId = {};
+  mod().questions.forEach(function(q){ byId[q.id] = q; });
+  const items = ids.map(function(id){ return byId[id]; }).filter(Boolean);
+  if (!items.length){ toast('计划中的题目不存在'); return; }
+  build(items);
+}
+function startPlan(){
+  const n = parseInt(el('planCount').value, 10);
+  if (!n || n < 1 || n > 500){ toast('请输入 1–500 之间的题量'); return; }
+  let p = getPlan();
+  if (!p || p.target !== n){
+    const base = pool();
+    const ordered = order === 'rand' ? shuffle(base.slice()) : base.slice();
+    const take = Math.min(n, ordered.length);
+    if (!take){ toast('当前范围内没有题目'); return; }
+    p = { date: todayStr(), target: take, done: 0,
+          ids: ordered.slice(0, take).map(function(q){ return q.id; }) };
+    savePlanObj(p);
+  }
+  if (p.done >= p.target){ toast('今日计划已完成，可点“重置”重新制定'); return; }
+  isPlanSession = true;
+  startWithIds(p.ids.slice(p.done));
+  renderPlan();
+  updatePlanBadge();
+  toast('今日计划：' + p.done + '/' + p.target + ' 题');
+}
+
 function mod(){
   for (let i = 0; i < MODULES.length; i++){
     if (MODULES[i].id === moduleId) return MODULES[i];
@@ -416,6 +512,10 @@ function render(){
   el('qno').textContent = '第 ' + (idx + 1) + ' / ' + queue.length + ' 题';
   el('stats').textContent = '正确 ' + right + ' · 错误 ' + wrong;
   el('stem').textContent = q.stem;
+  const ji = el('jumpInput');
+  ji.max = queue.length;
+  ji.placeholder = '1-' + queue.length;
+  updatePlanBadge();
   const fb = el('fb'); fb.className = 'fb';
   el('fbBadge').textContent = ''; el('fbText').textContent = '';
   el('autoHint').textContent = '';
@@ -514,6 +614,7 @@ function submit(picked){
   answered = true;
   responses[idx] = { picked: picked, ok: ok };
   if (ok){ right++; } else { wrong++; wrongList.push(q); }
+  countPlan();
   paint(q, responses[idx]);
   el('nextBtn').textContent = idx === queue.length - 1 ? '查看结果' : '下一题';
   updateBar();
@@ -530,6 +631,7 @@ function assessStudy(ok){
   const q = queue[idx];
   responses[idx] = { picked: '', ok: ok };
   if (ok){ right++; } else { wrong++; wrongList.push(q); }
+  countPlan();
   el('knowBtn').disabled = true;
   el('dontBtn').disabled = true;
   const f = el('fb');
@@ -563,6 +665,18 @@ function prev(){
   if (idx > 0){ idx--; render(); }
   saveLast();
 }
+function jumpTo(){
+  const n = parseInt(el('jumpInput').value, 10);
+  if (!n || n < 1 || n > queue.length){
+    toast('请输入 1–' + queue.length + ' 之间的题号');
+    return;
+  }
+  clearTimeout(timer);
+  idx = n - 1;
+  render();
+  el('jumpInput').value = '';
+  saveLast();
+}
 function finish(){
   clearTimeout(timer);
   clearLast();
@@ -574,6 +688,11 @@ function finish(){
   el('scoreText').textContent = right + ' / ' + total;
   el('scoreSub').textContent = '正确率 ' + acc + '%　答错 ' + wrong + ' 题'
     + (skipped ? ('　未作答 ' + skipped + ' 题') : '');
+  if (isPlanSession){
+    const p = getPlan();
+    if (p) el('scoreSub').textContent += '　今日计划 ' + p.done + '/' + p.target
+      + (p.done >= p.target ? '（已完成）' : '');
+  }
   const box = el('wrongs'); box.innerHTML = '';
   if (!wrongList.length){
     box.innerHTML = '<div class="hint">没有错题，全部答对。</div>';
@@ -647,22 +766,43 @@ el('modeChips').addEventListener('click', function(e){
 
 // ---- 搜索 / 索引 ----
 let searchHits = [], searchTimer = null;
-function qText(q){
-  return q.stem + ' ' + q.options.map(function(o){ return o.t; }).join(' ');
-}
-function highlightInto(target, text, kw){
-  const lower = text.toLowerCase(), k = kw.toLowerCase();
-  let pos = 0, at = lower.indexOf(k);
-  if (at < 0){ target.textContent = text; return; }
-  while (at >= 0){
-    if (at > pos) target.appendChild(document.createTextNode(text.slice(pos, at)));
-    const m = document.createElement('mark');
-    m.textContent = text.slice(at, at + kw.length);
-    target.appendChild(m);
-    pos = at + kw.length;
-    at = lower.indexOf(k, pos);
+const normCache = new Map();
+function normWithMap(s){
+  let out = '', map = [];
+  for (let i = 0; i < s.length; i++){
+    let ch = s[i].toLowerCase();
+    if (/[\s\u3000，,。.；;：:、（）()\[\]【】《》“”‘’"'·—\-～~？?！!]/.test(ch)) continue;
+    if (ch === '与' || ch === '及' || ch === '同') ch = '和';
+    out += ch;
+    map.push(i);
   }
-  if (pos < text.length) target.appendChild(document.createTextNode(text.slice(pos)));
+  return { n: out, map: map };
+}
+function getNorm(q){
+  let c = normCache.get(q.id);
+  if (c) return c;
+  const stem = normWithMap(q.stem);
+  const opts = q.options.map(function(o){ return { k: o.k, n: normWithMap(o.t) }; });
+  c = { stem: stem, opts: opts, all: stem.n + ' ' + opts.map(function(o){ return o.n.n; }).join(' ') };
+  normCache.set(q.id, c);
+  return c;
+}
+function findSpan(norm, qn){
+  const pos = norm.n.indexOf(qn);
+  if (pos < 0) return null;
+  return [norm.map[pos], norm.map[pos + qn.length - 1] + 1];
+}
+function highlightSpan(target, text, span){
+  if (!span || span[1] <= span[0] || span[0] >= text.length){
+    target.textContent = text;
+    return;
+  }
+  const a = span[0], b = Math.min(span[1], text.length);
+  if (a > 0) target.appendChild(document.createTextNode(text.slice(0, a)));
+  const m = document.createElement('mark');
+  m.textContent = text.slice(a, b);
+  target.appendChild(m);
+  if (b < text.length) target.appendChild(document.createTextNode(text.slice(b)));
 }
 function doSearch(raw){
   const kw = raw.trim();
@@ -672,36 +812,77 @@ function doSearch(raw){
     box.innerHTML = ''; box.classList.add('hidden'); meta.textContent = '';
     return;
   }
-  const lower = kw.toLowerCase();
-  searchHits = allQs().filter(function(q){ return qText(q).toLowerCase().indexOf(lower) >= 0; });
-  meta.textContent = searchHits.length
-    ? ('找到 ' + searchHits.length + ' 道题，点任意一条从该题开始（按原顺序）')
+  const qn = normWithMap(kw).n;
+  if (!qn){
+    searchHits = []; box.innerHTML = ''; box.classList.add('hidden');
+    meta.textContent = '';
+    return;
+  }
+  const hits = [];
+  allQs().forEach(function(q){
+    const c = getNorm(q);
+    const ss = findSpan(c.stem, qn);
+    if (ss){
+      hits.push({ q: q, score: 1000 - Math.min(ss[0], 200), where: 'stem', span: ss, fuzzy: false });
+      return;
+    }
+    for (let i = 0; i < c.opts.length; i++){
+      const os = findSpan(c.opts[i].n, qn);
+      if (os){
+        hits.push({ q: q, score: 700, where: 'opt', opt: c.opts[i].k, span: os, fuzzy: false });
+        return;
+      }
+    }
+    if (qn.length >= 4){
+      let hitsN = 0, total = 0;
+      for (let i = 0; i < qn.length - 1; i++){
+        total++;
+        if (c.all.indexOf(qn.slice(i, i + 2)) >= 0) hitsN++;
+      }
+      const cov = total ? hitsN / total : 0;
+      if (cov >= 0.8) hits.push({ q: q, score: 400 * cov, where: 'fuzzy', span: null, fuzzy: true });
+    }
+  });
+  hits.sort(function(a, b){ return b.score - a.score; });
+  searchHits = hits;
+  const fuzzyCount = hits.filter(function(h){ return h.fuzzy; }).length;
+  meta.textContent = hits.length
+    ? ('找到 ' + hits.length + ' 道题' + (fuzzyCount ? '（含 ' + fuzzyCount + ' 条模糊匹配）' : '')
+       + '，点任意一条从该题开始（按相关度排序）')
     : ('没有找到包含“' + kw + '”的题目');
   box.innerHTML = '';
   box.classList.remove('hidden');
-  searchHits.slice(0, 300).forEach(function(q, i){
+  hits.slice(0, 300).forEach(function(h, i){
+    const q = h.q;
     const b = document.createElement('button');
     b.type = 'button'; b.className = 'sr';
     const m = document.createElement('div'); m.className = 'm';
     m.textContent = q.chapter + ' · ' + TYPE_NAME[q.type] + ' · 答案 '
       + (q.type === 'judge' ? q.answer : q.answer.split('').join('、'));
     const t = document.createElement('div'); t.className = 't';
-    highlightInto(t, q.stem, kw);
+    highlightSpan(t, q.stem, h.where === 'stem' ? h.span : null);
     b.appendChild(m); b.appendChild(t);
-    if (q.stem.toLowerCase().indexOf(lower) < 0){
-      const hit = q.options.filter(function(o){ return o.t.toLowerCase().indexOf(lower) >= 0; })[0];
-      if (hit){
+    if (h.where === 'opt'){
+      const opt = q.options.filter(function(o){ return o.k === h.opt; })[0];
+      if (opt){
         const o = document.createElement('div');
         o.className = 't';
         o.style.color = 'var(--muted)';
         o.style.fontSize = '13.5px';
-        o.appendChild(document.createTextNode('选项 ' + hit.k + '．'));
-        highlightInto(o, hit.t, kw);
+        o.appendChild(document.createTextNode('选项 ' + opt.k + '．'));
+        highlightSpan(o, opt.t, h.span);
         b.appendChild(o);
       }
+    } else if (h.fuzzy){
+      const f = document.createElement('div');
+      f.className = 'm';
+      f.textContent = '（模糊匹配：用词略有差异）';
+      b.appendChild(f);
     }
     b.addEventListener('click', function(){
-      build(searchHits.slice());
+      isPlanSession = false;
+      updatePlanBadge();
+      build(searchHits.map(function(x){ return x.q; }));
       const pos = queue.indexOf(q);
       idx = pos >= 0 ? pos : 0;
       render();
@@ -725,7 +906,7 @@ el('searchInput').addEventListener('keydown', function(e){
     e.preventDefault();
     clearTimeout(searchTimer);
     doSearch(e.target.value);
-    if (searchHits.length){ build(searchHits.slice()); }
+    if (searchHits.length){ build(searchHits.map(function(x){ return x.q; })); }
   }
 });
 el('clearSearch').addEventListener('click', function(){
@@ -748,6 +929,7 @@ function requestStart(){
     return;
   }
   clearLast();
+  isPlanSession = false;
   build(pool());
 }
 el('startBtn').addEventListener('click', requestStart);
@@ -758,18 +940,35 @@ el('resumeYes').addEventListener('click', function(){
 el('resumeNo').addEventListener('click', function(){
   el('resumeModal').classList.add('hidden');
   clearLast();
+  isPlanSession = false;
   build(pool());
 });
-el('againBtn').addEventListener('click', function(){ build(pool()); });
+el('againBtn').addEventListener('click', function(){ isPlanSession = false; updatePlanBadge(); build(pool()); });
 el('homeBtn').addEventListener('click', function(){
+  isPlanSession = false;
+  updatePlanBadge();
+  renderPlan();
   el('result').classList.add('hidden');
   el('quiz').classList.add('hidden');
   el('start').classList.remove('hidden');
   el('counter').textContent = '';
   el('bar').firstElementChild.style.width = '0';
 });
-el('wrongBtn').addEventListener('click', function(){ if (wrongList.length) build(wrongList.slice()); });
+el('wrongBtn').addEventListener('click', function(){ if (wrongList.length){ isPlanSession = false; updatePlanBadge(); build(wrongList.slice()); } });
 el('prevBtn').addEventListener('click', prev);
+el('jumpBtn').addEventListener('click', jumpTo);
+el('jumpInput').addEventListener('keydown', function(e){
+  if (e.key === 'Enter'){ e.preventDefault(); jumpTo(); }
+});
+el('planBtn').addEventListener('click', startPlan);
+el('planReset').addEventListener('click', function(){
+  try { localStorage.removeItem(LS_PLAN); } catch (e) {}
+  isPlanSession = false;
+  renderPlan();
+  updatePlanBadge();
+  toast('已重置今日计划');
+});
+renderPlan();
 el('knowBtn').addEventListener('click', function(){ assessStudy(true); });
 el('dontBtn').addEventListener('click', function(){ assessStudy(false); });
 el('saveBtn').addEventListener('click', saveArchive);
