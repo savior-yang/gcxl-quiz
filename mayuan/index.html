@@ -87,6 +87,11 @@ mark{background:#ffe58a;color:#3a2a00;padding:0 1px;border-radius:2px}
 .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:-4px 0 10px}
 .toolbar .btn{padding:3px 10px;font-size:13px}
 .toolbar .spacer{margin-left:auto}
+.miniinput{flex:1 1 auto;min-width:0;border:1px solid var(--line);border-radius:10px;
+  padding:8px 10px;font:inherit;font-size:14px;background:transparent;color:var(--fg)}
+.miniinput:focus{outline:none;border-color:var(--primary);background:var(--accent)}
+.checkline{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:14px;color:var(--muted)}
+.checkline input{width:16px;height:16px;accent-color:var(--primary)}
 .fb{margin-top:16px;display:none;align-items:flex-start;gap:12px;font-size:16px}
 .fb.show{display:flex}
 .fb .badge{flex:0 0 auto;border-radius:8px;padding:3px 11px;font-weight:600;font-size:15px}
@@ -123,6 +128,10 @@ footer{margin-top:22px;color:var(--muted);font-size:13px}
   .next .row{display:grid;grid-template-columns:1fr 1fr;gap:8px;width:100%}
   .next .row .btn{width:100%;padding:11px 10px}
   .next .row #nextBtn{grid-column:1 / -1}
+  .pickrow{flex-wrap:wrap}
+  .pickrow #pickChapter{flex:1 1 100%}
+  .pickrow #pickStart,.pickrow #pickEnd{flex:1 1 38%}
+  .pickrow #addRangeBtn{flex:1 1 100%;white-space:nowrap}
 }
 </style>
 </head>
@@ -181,13 +190,25 @@ footer{margin-top:22px;color:var(--muted);font-size:13px}
       </div>
     </div>
     <div class="group">
-      <div class="hint">今日计划（可选）：今天打算答多少题</div>
+      <div class="hint">今日任务：按数量生成，或按章节+题号范围自主选题（可跨章节、跨模块）</div>
       <div class="searchrow">
-        <input id="planCount" type="number" min="1" max="500" placeholder="例如 50，留空则不设计划" style="flex:1 1 auto;min-width:0;border:1px solid var(--line);border-radius:10px;padding:9px 12px;font:inherit;background:transparent;color:var(--fg)">
-        <button class="btn" id="planBtn" type="button">开始今日计划</button>
-        <button class="btn" id="planReset" type="button">重置</button>
+        <input id="planCount" type="number" min="1" placeholder="按数量：今天答 N 题" class="miniinput">
+        <button class="btn" id="planBtn" type="button">按数量生成</button>
       </div>
-      <div id="planMeta" class="hint" style="margin-top:6px"></div>
+      <div class="searchrow pickrow" style="margin-top:8px">
+        <select id="pickChapter" class="miniinput"></select>
+        <input id="pickStart" type="number" min="1" placeholder="起始题号" class="miniinput">
+        <input id="pickEnd" type="number" min="1" placeholder="截止题号" class="miniinput">
+        <button class="btn" id="addRangeBtn" type="button">加入任务</button>
+      </div>
+      <label class="checkline"><input type="checkbox" id="onlyUnseen" checked> 只加入没做过的题（避免重复）</label>
+      <div id="pickMeta" class="hint" style="margin-top:6px"></div>
+      <div class="searchrow" style="margin-top:8px">
+        <button class="btn primary" id="taskStartBtn" type="button">开始今日任务</button>
+        <button class="btn" id="taskClearBtn" type="button">清空任务</button>
+      </div>
+      <div id="taskMeta" class="hint" style="margin-top:8px"></div>
+      <div id="taskList" class="results hidden"></div>
     </div>
     <div class="group">
       <div class="hint">我的存档（最多 5 个）</div>
@@ -298,7 +319,7 @@ function toast(msg){
 function snapshot(){
   if (!queue.length) return null;
   return {
-    v: 1, module: moduleId, chapter: chapter, type: type, order: order, mode: mode, plan: isPlanSession,
+    v: 1, module: moduleId, chapter: chapter, type: type, order: order, mode: mode, task: isTaskSession,
     ids: queue.map(function(q){ return q.id; }),
     idx: idx, right: right, wrong: wrong,
     responses: responses.map(function(r){ return r ? { picked: r.picked, ok: r.ok } : null; }),
@@ -325,7 +346,7 @@ function restore(s){
   type = s.type || 'all';
   order = s.order || 'seq';
   mode = s.mode || 'quiz';
-  isPlanSession = !!s.plan;
+  isTaskSession = !!s.task;
   setChips(el('moduleChips'), 'module', moduleId);
   buildChapters(); buildIntro();
   setChips(el('chapterChips'), 'chapter', chapter);
@@ -347,7 +368,7 @@ function restore(s){
   el('quiz').classList.remove('hidden');
   answered = false;
   render();
-  updatePlanBadge();
+  updateTaskBadge();
 }
 function getSaves(){
   const a = readJSON(LS_SAVES, []);
@@ -400,71 +421,227 @@ function saveArchive(){
   toast('已存档（' + saves.length + '/' + MAX_SAVES + '）');
 }
 
-// ---------------- 今日计划 ----------------
-const LS_PLAN = 'sztiku_plan_v1';
-let isPlanSession = false;
-function todayStr(){
-  const d = new Date();
-  const p = function(n){ return (n < 10 ? '0' : '') + n; };
-  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate());
+// ---------------- 今日任务 / 自主选题 / 答题历史 ----------------
+const LS_TASK = 'sztiku_task_v1', LS_HIST = 'sztiku_hist_v1';
+let isTaskSession = false;
+function getTask(){
+  const t = readJSON(LS_TASK, null);
+  if (!t || !Array.isArray(t.ids)) return { ids: [], done: {}, created: Date.now(), updated: Date.now() };
+  if (!t.done || typeof t.done !== 'object') t.done = {};
+  return t;
 }
-function getPlan(){
-  const p = readJSON(LS_PLAN, null);
-  if (!p || p.date !== todayStr()) return null;
-  return p;
+function saveTaskObj(t){ t.updated = Date.now(); writeJSON(LS_TASK, t); }
+function getHist(){
+  const h = readJSON(LS_HIST, {});
+  return (h && typeof h === 'object') ? h : {};
 }
-function savePlanObj(p){ writeJSON(LS_PLAN, p); }
-function renderPlan(){
-  const p = getPlan();
-  el('planMeta').textContent = p
-    ? ('今日计划：' + p.target + ' 题，已完成 ' + p.done + ' 题' + (p.done >= p.target ? '（已完成）' : ''))
-    : '未设置今日计划（留空则按当前范围不限题量）。';
+function recordHist(id, ok){
+  const h = getHist();
+  const e = h[id] || { c: 0, w: 0 };
+  if (ok){ e.c++; } else { e.w++; }
+  e.lastOk = !!ok;
+  e.last = Date.now();
+  h[id] = e;
+  writeJSON(LS_HIST, h);
 }
-function updatePlanBadge(){
-  const p = getPlan();
+function allById(){
+  const map = {};
+  MODULES.forEach(function(m){
+    m.questions.forEach(function(q){ q.mod = m.id; map[q.id] = q; });
+  });
+  return map;
+}
+function modLabel(q){ return q.mod === 'history' ? '近现代史' : '马原'; }
+function taskStats(){
+  const t = getTask(), hist = getHist(), byId = allById();
+  let total = 0, done = 0, c = 0, w = 0;
+  t.ids.forEach(function(id){
+    if (!byId[id]) return;
+    total++;
+    const d = t.done[id];
+    const h = hist[id];
+    if (d){ done++; if (d.ok){ c++; } else { w++; } }
+    else if (h){ done++; if (h.lastOk){ c++; } else { w++; } }
+  });
+  return { total: total, done: done, c: c, w: w };
+}
+function updateTaskBadge(){
   const b = el('planBadge');
-  if (isPlanSession && p){
-    b.textContent = '今日计划 ' + p.done + '/' + p.target;
+  if (isTaskSession){
+    const s = taskStats();
+    b.textContent = '今日任务 ' + s.done + '/' + s.total;
     b.classList.remove('hidden');
   } else {
     b.classList.add('hidden');
   }
 }
-function countPlan(){
-  if (!isPlanSession) return;
-  const p = getPlan();
-  if (!p) return;
-  p.done = Math.min(p.target, p.done + 1);
-  savePlanObj(p);
-  updatePlanBadge();
-  renderPlan();
-}
-function startWithIds(ids){
-  const byId = {};
-  mod().questions.forEach(function(q){ byId[q.id] = q; });
-  const items = ids.map(function(id){ return byId[id]; }).filter(Boolean);
-  if (!items.length){ toast('计划中的题目不存在'); return; }
-  build(items);
-}
-function startPlan(){
-  const n = parseInt(el('planCount').value, 10);
-  if (!n || n < 1 || n > 500){ toast('请输入 1–500 之间的题量'); return; }
-  let p = getPlan();
-  if (!p || p.target !== n){
-    const base = pool();
-    const ordered = order === 'rand' ? shuffle(base.slice()) : base.slice();
-    const take = Math.min(n, ordered.length);
-    if (!take){ toast('当前范围内没有题目'); return; }
-    p = { date: todayStr(), target: take, done: 0,
-          ids: ordered.slice(0, take).map(function(q){ return q.id; }) };
-    savePlanObj(p);
+function renderTask(){
+  const t = getTask(), hist = getHist(), byId = allById();
+  const items = t.ids.map(function(id){ return byId[id]; }).filter(Boolean);
+  const s = taskStats();
+  el('taskMeta').textContent = items.length
+    ? ('已选 ' + items.length + ' 题：已做 ' + s.done + ' 题（对 ' + s.c + ' / 错 ' + s.w + '），未做 '
+       + (items.length - s.done) + ' 题。')
+    : '任务为空：可以“按数量生成”，或选择章节和题号范围加入题目。';
+  const box = el('taskList');
+  box.innerHTML = '';
+  if (!items.length){ box.classList.add('hidden'); return; }
+  box.classList.remove('hidden');
+  const tally = {};
+  items.forEach(function(q){ tally[q.chapter] = (tally[q.chapter] || 0) + 1; });
+  const line = document.createElement('div');
+  line.className = 'hint';
+  line.textContent = Object.keys(tally).map(function(k){ return k + ' ' + tally[k] + ' 题'; }).join(' · ');
+  box.appendChild(line);
+  items.slice(0, 200).forEach(function(q){
+    const h = hist[q.id], d = t.done[q.id];
+    const row = document.createElement('div');
+    row.className = 'sr';
+    row.style.cursor = 'default';
+    const m = document.createElement('div');
+    m.className = 'm';
+    let status;
+    if (d && !d.fromHistory) status = '本次已做（' + (d.ok ? '对' : '错') + '）';
+    else if (h) status = '已做：对 ' + h.c + ' 次 / 错 ' + h.w + ' 次';
+    else status = '未做';
+    m.textContent = modLabel(q) + ' · ' + q.chapter + ' · ' + TYPE_NAME[q.type] + ' · ' + status;
+    const st = document.createElement('div');
+    st.className = 't';
+    st.textContent = q.stem.length > 70 ? q.stem.slice(0, 70) + '…' : q.stem;
+    row.appendChild(m); row.appendChild(st);
+    box.appendChild(row);
+  });
+  if (items.length > 200){
+    const more = document.createElement('div');
+    more.className = 'hint';
+    more.textContent = '共 ' + items.length + ' 题，仅显示前 200 题。';
+    box.appendChild(more);
   }
-  if (p.done >= p.target){ toast('今日计划已完成，可点“重置”重新制定'); return; }
-  isPlanSession = true;
-  startWithIds(p.ids.slice(p.done));
-  renderPlan();
-  updatePlanBadge();
-  toast('今日计划：' + p.done + '/' + p.target + ' 题');
+}
+function chapterQuestions(c){
+  return mod().questions.filter(function(q){ return q.chapter === c; });
+}
+function fillPickChapters(){
+  const sel = el('pickChapter');
+  const prev = sel.value;
+  sel.innerHTML = '';
+  mod().chapters.forEach(function(c){
+    const n = chapterQuestions(c).length;
+    const o = document.createElement('option');
+    o.value = c;
+    o.textContent = c + '（' + n + ' 题）';
+    sel.appendChild(o);
+  });
+  if (prev && mod().chapters.indexOf(prev) >= 0) sel.value = prev;
+  updatePickMeta();
+}
+function updatePickMeta(){
+  const sel = el('pickChapter');
+  const c = sel.value;
+  if (!c){ el('pickMeta').textContent = ''; return; }
+  const qs = chapterQuestions(c);
+  const t = getTask(), hist = getHist();
+  const inTask = qs.filter(function(q){ return t.ids.indexOf(q.id) >= 0; }).length;
+  const seen = qs.filter(function(q){ return !!hist[q.id]; }).length;
+  el('pickMeta').textContent = '本章共 ' + qs.length + ' 题（题号 1–' + qs.length + '）；已在任务 '
+    + inTask + ' 题，已做过 ' + seen + ' 题。';
+}
+function addRange(){
+  const c = el('pickChapter').value;
+  const qs = chapterQuestions(c);
+  if (!qs.length){ toast('请选择章节'); return; }
+  let a = parseInt(el('pickStart').value, 10);
+  let b = parseInt(el('pickEnd').value, 10);
+  if (!a) a = 1;
+  if (!b) b = qs.length;
+  if (a < 1 || b > qs.length || a > b){
+    toast('题号范围应为 1–' + qs.length);
+    return;
+  }
+  const t = getTask(), hist = getHist();
+  const onlyUnseen = el('onlyUnseen').checked;
+  let added = 0, skippedSeen = 0, skippedDup = 0;
+  for (let i = a; i <= b; i++){
+    const q = qs[i - 1];
+    if (t.ids.indexOf(q.id) >= 0){ skippedDup++; continue; }
+    if (onlyUnseen && hist[q.id]){ skippedSeen++; continue; }
+    t.ids.push(q.id);
+    added++;
+  }
+  saveTaskObj(t);
+  renderTask();
+  updatePickMeta();
+  toast('已加入 ' + added + ' 题'
+    + (skippedSeen ? '，跳过 ' + skippedSeen + ' 道已做' : '')
+    + (skippedDup ? '，' + skippedDup + ' 道已在任务中' : ''));
+}
+function genByCount(){
+  const n = parseInt(el('planCount').value, 10);
+  if (!n || n < 1){ toast('请输入要答的题数'); return; }
+  const t = getTask();
+  if (t.ids.length && !confirm('按数量生成会替换当前任务，继续吗？')) return;
+  const hist = getHist();
+  let base = pool();
+  if (el('onlyUnseen').checked) base = base.filter(function(q){ return !hist[q.id]; });
+  if (!base.length){ toast('当前范围内没有可加入的题目'); return; }
+  const ordered = order === 'rand' ? shuffle(base.slice()) : base.slice();
+  const take = Math.min(n, ordered.length);
+  t.ids = ordered.slice(0, take).map(function(q){ return q.id; });
+  t.done = {};
+  saveTaskObj(t);
+  renderTask();
+  updatePickMeta();
+  toast('已生成 ' + take + ' 题的任务' + (take < n ? '（可选题不足）' : ''));
+}
+function startTask(){
+  const t = getTask();
+  if (!t.ids.length){ toast('任务为空，请先加入题目'); return; }
+  const byId = allById();
+  const items = t.ids.map(function(id){ return byId[id]; }).filter(Boolean);
+  if (!items.length){ toast('任务中的题目不存在'); return; }
+  const hist = getHist();
+  let changed = false;
+  items.forEach(function(q){
+    if (!t.done[q.id] && hist[q.id]){
+      t.done[q.id] = { picked: '', ok: !!hist[q.id].lastOk, at: hist[q.id].last || Date.now(), fromHistory: true };
+      changed = true;
+    }
+  });
+  if (changed) saveTaskObj(t);
+  queue = items;
+  responses = items.map(function(q){
+    const d = t.done[q.id];
+    return d ? { picked: d.picked || '', ok: !!d.ok } : null;
+  });
+  right = responses.filter(function(r){ return r && r.ok; }).length;
+  wrong = responses.filter(function(r){ return r && !r.ok; }).length;
+  wrongList = items.filter(function(q, i){ return responses[i] && !responses[i].ok; });
+  const firstUn = responses.indexOf(null);
+  idx = firstUn >= 0 ? firstUn : 0;
+  isTaskSession = true;
+  answered = false;
+  el('start').classList.add('hidden');
+  el('result').classList.add('hidden');
+  el('quiz').classList.remove('hidden');
+  render();
+  updateTaskBadge();
+}
+function markTaskDone(q, picked, ok){
+  const t = getTask();
+  if (t.ids.indexOf(q.id) < 0) return;
+  t.done[q.id] = { picked: picked, ok: ok, at: Date.now() };
+  saveTaskObj(t);
+  updateTaskBadge();
+  renderTask();
+}
+function clearTask(){
+  if (!getTask().ids.length) return;
+  if (!confirm('确定清空当前任务吗？（答题历史会保留）')) return;
+  writeJSON(LS_TASK, { ids: [], done: {}, created: Date.now(), updated: Date.now() });
+  isTaskSession = false;
+  renderTask();
+  updateTaskBadge();
+  toast('已清空任务');
 }
 
 function mod(){
@@ -508,14 +685,14 @@ function render(){
   if (!q){ finish(); return; }
   const resp = responses[idx];
   answered = !!resp;
-  el('qtag').textContent = q.chapter + ' · ' + TYPE_NAME[q.type];
+  el('qtag').textContent = modLabel(q) + ' · ' + q.chapter + ' · ' + TYPE_NAME[q.type];
   el('qno').textContent = '第 ' + (idx + 1) + ' / ' + queue.length + ' 题';
   el('stats').textContent = '正确 ' + right + ' · 错误 ' + wrong;
   el('stem').textContent = q.stem;
   const ji = el('jumpInput');
   ji.max = queue.length;
   ji.placeholder = '1-' + queue.length;
-  updatePlanBadge();
+  updateTaskBadge();
   const fb = el('fb'); fb.className = 'fb';
   el('fbBadge').textContent = ''; el('fbText').textContent = '';
   el('autoHint').textContent = '';
@@ -614,7 +791,8 @@ function submit(picked){
   answered = true;
   responses[idx] = { picked: picked, ok: ok };
   if (ok){ right++; } else { wrong++; wrongList.push(q); }
-  countPlan();
+  recordHist(q.id, ok);
+  if (isTaskSession) markTaskDone(q, picked, ok);
   paint(q, responses[idx]);
   el('nextBtn').textContent = idx === queue.length - 1 ? '查看结果' : '下一题';
   updateBar();
@@ -631,7 +809,8 @@ function assessStudy(ok){
   const q = queue[idx];
   responses[idx] = { picked: '', ok: ok };
   if (ok){ right++; } else { wrong++; wrongList.push(q); }
-  countPlan();
+  recordHist(q.id, ok);
+  if (isTaskSession) markTaskDone(q, '', ok);
   el('knowBtn').disabled = true;
   el('dontBtn').disabled = true;
   const f = el('fb');
@@ -688,10 +867,10 @@ function finish(){
   el('scoreText').textContent = right + ' / ' + total;
   el('scoreSub').textContent = '正确率 ' + acc + '%　答错 ' + wrong + ' 题'
     + (skipped ? ('　未作答 ' + skipped + ' 题') : '');
-  if (isPlanSession){
-    const p = getPlan();
-    if (p) el('scoreSub').textContent += '　今日计划 ' + p.done + '/' + p.target
-      + (p.done >= p.target ? '（已完成）' : '');
+  if (isTaskSession){
+    const s = taskStats();
+    el('scoreSub').textContent += '　今日任务 ' + s.done + '/' + s.total
+      + (s.done >= s.total ? '（已完成）' : '');
   }
   const box = el('wrongs'); box.innerHTML = '';
   if (!wrongList.length){
@@ -740,6 +919,7 @@ function selectModule(id){
   setChips(el('moduleChips'), 'module', id);
   buildChapters();
   buildIntro();
+  fillPickChapters();
   el('searchInput').value = '';
   doSearch('');
 }
@@ -880,8 +1060,8 @@ function doSearch(raw){
       b.appendChild(f);
     }
     b.addEventListener('click', function(){
-      isPlanSession = false;
-      updatePlanBadge();
+      isTaskSession = false;
+      updateTaskBadge();
       build(searchHits.map(function(x){ return x.q; }));
       const pos = queue.indexOf(q);
       idx = pos >= 0 ? pos : 0;
@@ -929,7 +1109,7 @@ function requestStart(){
     return;
   }
   clearLast();
-  isPlanSession = false;
+  isTaskSession = false;
   build(pool());
 }
 el('startBtn').addEventListener('click', requestStart);
@@ -940,35 +1120,33 @@ el('resumeYes').addEventListener('click', function(){
 el('resumeNo').addEventListener('click', function(){
   el('resumeModal').classList.add('hidden');
   clearLast();
-  isPlanSession = false;
+  isTaskSession = false;
   build(pool());
 });
-el('againBtn').addEventListener('click', function(){ isPlanSession = false; updatePlanBadge(); build(pool()); });
+el('againBtn').addEventListener('click', function(){ isTaskSession = false; updateTaskBadge(); build(pool()); });
 el('homeBtn').addEventListener('click', function(){
-  isPlanSession = false;
-  updatePlanBadge();
-  renderPlan();
+  isTaskSession = false;
+  updateTaskBadge();
+  renderTask();
   el('result').classList.add('hidden');
   el('quiz').classList.add('hidden');
   el('start').classList.remove('hidden');
   el('counter').textContent = '';
   el('bar').firstElementChild.style.width = '0';
 });
-el('wrongBtn').addEventListener('click', function(){ if (wrongList.length){ isPlanSession = false; updatePlanBadge(); build(wrongList.slice()); } });
+el('wrongBtn').addEventListener('click', function(){ if (wrongList.length){ isTaskSession = false; updateTaskBadge(); build(wrongList.slice()); } });
 el('prevBtn').addEventListener('click', prev);
 el('jumpBtn').addEventListener('click', jumpTo);
 el('jumpInput').addEventListener('keydown', function(e){
   if (e.key === 'Enter'){ e.preventDefault(); jumpTo(); }
 });
-el('planBtn').addEventListener('click', startPlan);
-el('planReset').addEventListener('click', function(){
-  try { localStorage.removeItem(LS_PLAN); } catch (e) {}
-  isPlanSession = false;
-  renderPlan();
-  updatePlanBadge();
-  toast('已重置今日计划');
-});
-renderPlan();
+el('planBtn').addEventListener('click', genByCount);
+el('addRangeBtn').addEventListener('click', addRange);
+el('taskStartBtn').addEventListener('click', startTask);
+el('taskClearBtn').addEventListener('click', clearTask);
+el('pickChapter').addEventListener('change', updatePickMeta);
+fillPickChapters();
+renderTask();
 el('knowBtn').addEventListener('click', function(){ assessStudy(true); });
 el('dontBtn').addEventListener('click', function(){ assessStudy(false); });
 el('saveBtn').addEventListener('click', saveArchive);
