@@ -201,7 +201,7 @@ footer{margin-top:22px;color:var(--muted);font-size:13px}
         <input id="pickEnd" type="number" min="1" placeholder="截止题号" class="miniinput">
         <button class="btn" id="addRangeBtn" type="button">加入任务</button>
       </div>
-      <label class="checkline"><input type="checkbox" id="onlyUnseen" checked> 只加入没做过的题（避免重复）</label>
+      <label class="checkline"><input type="checkbox" id="onlyUnseen"> 只加入没做过的题（不勾选则包含做过的题，可重新练习）</label>
       <div id="pickMeta" class="hint" style="margin-top:6px"></div>
       <div class="searchrow" style="margin-top:8px">
         <button class="btn primary" id="taskStartBtn" type="button">开始今日任务</button>
@@ -428,6 +428,15 @@ function getTask(){
   const t = readJSON(LS_TASK, null);
   if (!t || !Array.isArray(t.ids)) return { ids: [], done: {}, created: Date.now(), updated: Date.now() };
   if (!t.done || typeof t.done !== 'object') t.done = {};
+  // 旧版本会把“以前做过”的题直接标成已完成，导致无法重做；这里清理掉这类记录
+  let changed = false;
+  Object.keys(t.done).forEach(function(id){
+    if (t.done[id] && t.done[id].fromHistory){
+      delete t.done[id];
+      changed = true;
+    }
+  });
+  if (changed) saveTaskObj(t);
   return t;
 }
 function saveTaskObj(t){ t.updated = Date.now(); writeJSON(LS_TASK, t); }
@@ -454,16 +463,16 @@ function allById(){
 function modLabel(q){ return q.mod === 'history' ? '近现代史' : '马原'; }
 function taskStats(){
   const t = getTask(), hist = getHist(), byId = allById();
-  let total = 0, done = 0, c = 0, w = 0;
+  let total = 0, done = 0, c = 0, w = 0, seen = 0;
   t.ids.forEach(function(id){
     if (!byId[id]) return;
     total++;
     const d = t.done[id];
     const h = hist[id];
     if (d){ done++; if (d.ok){ c++; } else { w++; } }
-    else if (h){ done++; if (h.lastOk){ c++; } else { w++; } }
+    if (h) seen++;
   });
-  return { total: total, done: done, c: c, w: w };
+  return { total: total, done: done, c: c, w: w, seen: seen };
 }
 function updateTaskBadge(){
   const b = el('planBadge');
@@ -480,8 +489,9 @@ function renderTask(){
   const items = t.ids.map(function(id){ return byId[id]; }).filter(Boolean);
   const s = taskStats();
   el('taskMeta').textContent = items.length
-    ? ('已选 ' + items.length + ' 题：已做 ' + s.done + ' 题（对 ' + s.c + ' / 错 ' + s.w + '），未做 '
-       + (items.length - s.done) + ' 题。')
+    ? ('已选 ' + items.length + ' 题：本次已做 ' + s.done + ' 题（对 ' + s.c + ' / 错 ' + s.w + '），未做 '
+       + (items.length - s.done) + ' 题。'
+       + (s.seen ? '其中 ' + s.seen + ' 题以前做过，可重新练习。' : ''))
     : '任务为空：可以“按数量生成”，或选择章节和题号范围加入题目。';
   const box = el('taskList');
   box.innerHTML = '';
@@ -502,8 +512,9 @@ function renderTask(){
     m.className = 'm';
     let status;
     if (d && !d.fromHistory) status = '本次已做（' + (d.ok ? '对' : '错') + '）';
-    else if (h) status = '已做：对 ' + h.c + ' 次 / 错 ' + h.w + ' 次';
+    else if (h) status = '以前做过：对 ' + h.c + ' 次 / 错 ' + h.w + ' 次 · 本次可重做';
     else status = '未做';
+    if (d && h) status += ' · 历史 对' + h.c + ' 错' + h.w;
     m.textContent = modLabel(q) + ' · ' + q.chapter + ' · ' + TYPE_NAME[q.type] + ' · ' + status;
     const st = document.createElement('div');
     st.className = 't';
@@ -599,15 +610,6 @@ function startTask(){
   const byId = allById();
   const items = t.ids.map(function(id){ return byId[id]; }).filter(Boolean);
   if (!items.length){ toast('任务中的题目不存在'); return; }
-  const hist = getHist();
-  let changed = false;
-  items.forEach(function(q){
-    if (!t.done[q.id] && hist[q.id]){
-      t.done[q.id] = { picked: '', ok: !!hist[q.id].lastOk, at: hist[q.id].last || Date.now(), fromHistory: true };
-      changed = true;
-    }
-  });
-  if (changed) saveTaskObj(t);
   queue = items;
   responses = items.map(function(q){
     const d = t.done[q.id];
